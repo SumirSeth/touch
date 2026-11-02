@@ -1,4 +1,4 @@
-# Trackpad Gestures: release app spec (v1)
+# Touch: release app spec (v1)
 
 A small Windows 11 tray app that adds custom Precision Touchpad gestures and lets the user choose what each gesture
 does. It works alongside Windows' own touchpad handling (pointer, scrolling and clicks stay Windows'). No animation or
@@ -10,7 +10,7 @@ recognisers (`Gestures.cs`), brightness through WMI (`Brightness.cs`), key injec
 (`test.ps1`). Background on why things are the way they are: `trackpad/research/`. Rule from the user: no third-party
 mods or hooks (no Windhawk etc.). Ordinary crates are fine.
 
-Working product name: **Trackpad Gestures** (may change before release; keep it in one place per file type:
+Product name: **Touch** (repo `SumirSeth/touch`, versions x.y.z starting at 0.1.0; keep it in one place per file type:
 the `PRODUCT_NAME` const in the app, the packager config, and the `APP_NAME` const in the engine).
 
 ## Stack and layout
@@ -99,7 +99,7 @@ versa.
 
 ## Config
 
-`%APPDATA%\TrackpadGestures\config.json`, written atomically (temp file + rename). Missing file = defaults. Unknown
+`%APPDATA%\Touch\config.json`, written atomically (temp file + rename). Missing file = defaults. Unknown
 fields are ignored; a file that fails to parse is renamed to `config.json.bad` and defaults are used (and reported).
 
 ```json
@@ -134,7 +134,7 @@ The contract between the two halves. Types are serde (de)serialisable with the J
 (`#[serde(tag = "type", rename_all = "snake_case")]` for actions).
 
 ```rust
-pub const APP_NAME: &str = "TrackpadGestures";
+pub const APP_NAME: &str = "Touch";
 
 pub struct Config { pub version: u32, pub enabled: bool, pub freeze_cursor: bool, pub edge_width_mm: f64,
                     pub swipe_distance_mm: f64, pub drag3: bool, pub bindings: BTreeMap<String, Action> }
