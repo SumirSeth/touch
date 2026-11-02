@@ -1,0 +1,14 @@
+{
+  "name": "trackpad-gestures",
+  "productName": "Trackpad Gestures",
+  "version": "0.1.0",
+  "identifier": "io.trackpadgestures.app",
+  "publisher": "Trackpad Gestures",
+  "description": "Native Windows touchpad gesture settings",
+  "binaries": [{"path": "trackpad-gestures", "main": true}],
+  "binariesDir": "../target/release",
+  "outDir": "../target/installers",
+  "formats": ["nsis", "wix"],
+  "icons": ["assets/icon.ico"],
+  "nsis": {"installMode": "currentUser"}
+}
