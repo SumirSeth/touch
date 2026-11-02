@@ -2,8 +2,8 @@ use windows::{
     Win32::{
         Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE},
         System::Threading::{
-            CreateEventW, CreateMutexW, EVENT_MODIFY_STATE, OpenEventW, SetEvent,
-            WaitForSingleObject,
+            CreateEventW, CreateMutexW, EVENT_MODIFY_STATE, INFINITE, OpenEventW, SetEvent,
+            WaitForMultipleObjects,
         },
     },
     core::w,
@@ -47,9 +47,6 @@ pub fn single_instance() -> Option<Instance> {
     }
 }
 thread_local! {static OPEN:HANDLE=unsafe{CreateEventW(None,false,false,w!("Local\\Touch.App.v1.Open")).expect("open signal")};}
-pub fn take_open_request() -> bool {
-    OPEN.with(|h| unsafe { WaitForSingleObject(*h, 0).0 == 0 })
-}
 pub fn autostart() -> bool {
     RegKey::predef(HKEY_CURRENT_USER)
         .open_subkey(RUN)
@@ -93,6 +90,26 @@ pub fn appearance() -> (bool, u32) {
 }
 
 thread_local! { static QUIT:HANDLE=unsafe {CreateEventW(None,false,false,w!("Local\\Touch.App.v1.Quit")).expect("quit signal")}; }
-pub fn take_quit_request() -> bool {
-    QUIT.with(|h| unsafe { WaitForSingleObject(*h, 0).0 == 0 })
+// The events are created before releasing single-instance initialization. Transfer
+// their raw values to one process-lifetime waiter; the original handles stay open.
+pub fn forward_requests(tx: async_channel::Sender<crate::AppEvent>) {
+    let open = OPEN.with(|h| h.0 as usize);
+    let quit = QUIT.with(|h| h.0 as usize);
+    std::thread::Builder::new()
+        .name("app-requests".into())
+        .spawn(move || {
+            let handles = [HANDLE(open as *mut _), HANDLE(quit as *mut _)];
+            loop {
+                let result = unsafe { WaitForMultipleObjects(&handles, false, INFINITE) }.0;
+                let event = match result {
+                    0 => crate::AppEvent::Open,
+                    1 => crate::AppEvent::Quit,
+                    _ => break,
+                };
+                if tx.send_blocking(event).is_err() {
+                    break;
+                }
+            }
+        })
+        .expect("app request thread");
 }

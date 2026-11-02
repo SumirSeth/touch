@@ -4,6 +4,8 @@ version.workspace = true
 edition = "2024"
 build = "build.rs"
 [dependencies]
+async-channel = "2"
+futures-lite = "2"
 gestures_engine = { path = "../crates/engine" }
 gpui = "=0.2.2"
 gpui-component = "=0.5.1"

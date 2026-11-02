@@ -79,7 +79,7 @@ pub struct Recognizer {
     knob_start: Option<(f64, f64)>,
     knob_off: bool,
     knob_rotation: f64,
-    edge_candidates: Vec<String>,
+    edge_candidates: Vec<&'static str>,
     edge_start: (f64, f64),
     edge_last: f64,
     carry: f64,
@@ -180,6 +180,9 @@ impl Recognizer {
         let mut out = vec![];
         let n = f.touching.len();
         if n == 0 {
+            if !self.active {
+                return out;
+            }
             if self.active
                 && !self.cancelled
                 && self.owner.is_none()
@@ -215,7 +218,7 @@ impl Recognizer {
                     ),
                 ] {
                     if on && self.bound(id) {
-                        self.edge_candidates.push(id.into());
+                        self.edge_candidates.push(id);
                     }
                 }
                 let side = if p.x <= 12. {
@@ -275,7 +278,7 @@ impl Recognizer {
         }
         let c = center(&f.touching);
         // End continuous ownership when contacts change; ownership persists until all lift.
-        if let Some(id) = self.owner.clone() {
+        if let Some(id) = self.owner.take() {
             if id.starts_with("edge_") {
                 if n != 1 || !on_edge(&id, &f.touching[0], f, self.config.edge_width_mm) {
                     if self.frozen {
@@ -294,7 +297,7 @@ impl Recognizer {
                 } else {
                     let r = rotation(&self.knob_prev, &f.touching);
                     self.adjust(&id, r, &mut out);
-                    self.knob_prev = f.touching.clone();
+                    self.knob_prev.clone_from(&f.touching);
                 }
             } else if id == "drag3" {
                 if n != 3 {
@@ -305,6 +308,7 @@ impl Recognizer {
                     self.drag_move(c, &mut out);
                 }
             }
+            self.owner = Some(id);
             self.n = n;
             return out;
         }
@@ -320,21 +324,21 @@ impl Recognizer {
             if !self.edge_off {
                 self.edge_candidates
                     .retain(|id| on_edge(id, p, f, self.config.edge_width_mm));
-                let candidates = self.edge_candidates.clone();
-                for id in candidates {
-                    if !on_edge(&id, p, f, self.config.edge_width_mm) {
+                for i in 0..self.edge_candidates.len() {
+                    let id = self.edge_candidates[i];
+                    if !on_edge(id, p, f, self.config.edge_width_mm) {
                         continue;
                     }
                     let vertical = id == "edge_left" || id == "edge_right";
                     let (a, b) = if vertical { (dy, dx) } else { (dx, dy) };
                     if a.abs() >= 3. && a.abs() > 2. * b.abs() {
-                        self.owner = Some(id.clone());
+                        self.owner = Some(id.to_string());
                         self.frozen = self.config.freeze_cursor;
                         if self.frozen {
                             out.push(GestureEvent::Freeze(true));
                         }
-                        self.edge_last = edge_pos(&id, p);
-                        self.adjust(&id, if vertical { -dy } else { dx }, &mut out);
+                        self.edge_last = edge_pos(id, p);
+                        self.adjust(id, if vertical { -dy } else { dx }, &mut out);
                         break;
                     }
                 }
@@ -437,7 +441,7 @@ impl Recognizer {
             } else {
                 self.knob_start = Some(c);
             }
-            self.knob_prev = f.touching.clone();
+            self.knob_prev.clone_from(&f.touching);
         } else if self.knob_start.is_some() {
             self.knob_off = true;
         }
@@ -475,7 +479,7 @@ impl Recognizer {
                     self.fire(id, &mut out);
                 }
             }
-            self.five_prev = f.touching.clone();
+            self.five_prev.clone_from(&f.touching);
         } else {
             self.five_prev.clear();
             self.five_rotation = 0.;

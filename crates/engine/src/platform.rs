@@ -130,6 +130,7 @@ struct State {
     commands: Receiver<Command>,
     clock: Instant,
     frozen: bool,
+    raw_buffer: Vec<u64>,
 }
 impl State {
     fn output(&mut self, events: Vec<GestureEvent>) {
@@ -208,7 +209,7 @@ impl State {
             }
         }
     }
-    fn frame(&mut self, frame: Frame) {
+    fn frame(&mut self, frame: &Frame) {
         if !self.recognizer.is_active() {
             if let Some(c) = self.pending.take() {
                 self.config = c.clone();
@@ -216,18 +217,23 @@ impl State {
             }
         }
         if !self.paused {
-            let events = self.recognizer.on_frame(&frame);
+            let events = self.recognizer.on_frame(frame);
             self.output(events);
         }
     }
     unsafe fn raw(&mut self, handle: HRAWINPUT) {
+        let mut buf = std::mem::take(&mut self.raw_buffer);
+        self.raw_buffered(handle, &mut buf);
+        self.raw_buffer = buf;
+    }
+    unsafe fn raw_buffered(&mut self, handle: HRAWINPUT, buf: &mut Vec<u64>) {
         let hdr = size_of::<RAWINPUTHEADER>() as u32;
         let mut size = 0;
         GetRawInputData(handle, RID_INPUT, null_mut(), &mut size, hdr);
         if size < (hdr + 8) || size > 1024 * 1024 {
             return;
         }
-        let mut buf = vec![0u64; (size as usize).div_ceil(8)];
+        buf.resize((size as usize).div_ceil(8), 0);
         if GetRawInputData(handle, RID_INPUT, buf.as_mut_ptr().cast(), &mut size, hdr) == u32::MAX {
             return;
         }
@@ -274,21 +280,20 @@ impl State {
         if rep_size == 0 || count > bytes.len() / rep_size {
             return;
         }
-        let mut frames = vec![];
-        let dev = self.devices.get_mut(&key).unwrap();
-        if dev.synthetic {
-            return;
-        }
         for i in 0..count {
             let offset = hdr as usize + 8 + i * rep_size;
             if let Some(report) = bytes.get(offset..offset + rep_size) {
-                if let Some(f) = dev.report(report, self.clock.elapsed().as_millis() as u64) {
-                    frames.push(f);
+                let frame = self
+                    .devices
+                    .get_mut(&key)
+                    .unwrap()
+                    .report(report, self.clock.elapsed().as_millis() as u64);
+                if let Some(mut frame) = frame {
+                    self.frame(&frame);
+                    frame.touching.clear();
+                    self.devices.get_mut(&key).unwrap().pending = frame.touching;
                 }
             }
-        }
-        for f in frames {
-            self.frame(f);
         }
     }
 }
@@ -381,6 +386,7 @@ unsafe fn input_thread(
         commands,
         clock: Instant::now(),
         frozen: false,
+        raw_buffer: Vec::new(),
     });
     SetWindowLongPtrW(hwnd, GWLP_USERDATA, (&mut *state as *mut State) as isize);
     let device = RAWINPUTDEVICE {
@@ -558,8 +564,8 @@ impl Device {
         );
         value
     }
-    unsafe fn usages(&self, page: u16, link: u16, r: &[u8]) -> Vec<u16> {
-        let mut buf = vec![0u16; 32];
+    unsafe fn usages(&self, page: u16, link: u16, r: &[u8]) -> ([u16; 32], usize) {
+        let mut buf = [0u16; 32];
         let mut n = buf.len() as u32;
         if HidP_GetUsages(
             HidP_Input,
@@ -572,10 +578,9 @@ impl Device {
             r.len() as u32,
         ) != HIDP_STATUS_SUCCESS
         {
-            return vec![];
+            return (buf, 0);
         }
-        buf.truncate((n as usize).min(buf.len()));
-        buf
+        (buf, (n as usize).min(buf.len()))
     }
     unsafe fn report(&mut self, r: &[u8], time_ms: u64) -> Option<Frame> {
         let count = self.value(13, 0, 0x54, r) as usize;
@@ -589,8 +594,9 @@ impl Device {
         } else if self.expected == 0 {
             return None;
         }
-        self.button |= !self.usages(9, 0, r).is_empty();
-        let tip = self.usages(13, 1, r).contains(&0x42);
+        self.button |= self.usages(9, 0, r).1 != 0;
+        let (usages, n) = self.usages(13, 1, r);
+        let tip = usages[..n].contains(&0x42);
         let p = Contact {
             id: self.value(13, 1, 0x51, r),
             x: (self.value(1, 1, 0x30, r) as f64 - self.min_x) * self.sx,
@@ -604,11 +610,9 @@ impl Device {
             return None;
         }
         self.expected = 0;
+        self.pending.retain(|p| p.id != u32::MAX);
         Some(Frame {
-            touching: std::mem::take(&mut self.pending)
-                .into_iter()
-                .filter(|p| p.id != u32::MAX)
-                .collect(),
+            touching: std::mem::take(&mut self.pending),
             width_mm: self.width,
             height_mm: self.height,
             time_ms,
@@ -625,6 +629,7 @@ enum Work {
 fn worker(rx: Receiver<Work>, events: Option<Sender<EngineEvent>>) {
     let mut queued = std::collections::VecDeque::new();
     let mut dragging = false;
+    let mut brightness = Brightness::default();
     loop {
         let work = queued.pop_front().or_else(|| rx.recv().ok());
         let Some(work) = work else {
@@ -662,9 +667,9 @@ fn worker(rx: Receiver<Work>, events: Option<Sender<EngineEvent>>) {
                         }
                     }
                 }
-                brightness(delta)
+                brightness.adjust(delta)
             }
-            Work::Action(a, steps) => execute(&a, steps),
+            Work::Action(a, steps) => execute(&a, steps, &mut brightness),
         };
         if let Err(e) = result {
             emit(&events, EngineEvent::Error(e.to_string()));
@@ -763,7 +768,7 @@ fn shell(path: &str, args: Option<&str>) -> io::Result<()> {
         Ok(())
     }
 }
-fn execute(action: &Action, steps: i32) -> io::Result<()> {
+fn execute(action: &Action, steps: i32, brightness: &mut Brightness) -> io::Result<()> {
     match action {
         Action::None => Ok(()),
         Action::Preset { name } if name == "lock" => {
@@ -783,7 +788,7 @@ fn execute(action: &Action, steps: i32) -> io::Result<()> {
             let up = steps > 0;
             for _ in 0..steps.unsigned_abs() {
                 match target {
-                    AdjustTarget::Brightness => brightness(if up { 1 } else { -1 })?,
+                    AdjustTarget::Brightness => brightness.adjust(if up { 1 } else { -1 })?,
                     AdjustTarget::ScrollH => {
                         send(&[INPUT {
                             r#type: INPUT_MOUSE,
@@ -847,41 +852,126 @@ fn execute(action: &Action, steps: i32) -> io::Result<()> {
         }
     }
 }
-fn brightness(delta: i32) -> io::Result<()> {
-    use wmi::{Variant, WMIConnection};
-    let run = || -> Result<(), Box<dyn std::error::Error>> {
-        let con = WMIConnection::with_namespace_path("ROOT\\WMI")?;
-        let rows: Vec<HashMap<String, Variant>> =
-            con.raw_query("SELECT CurrentBrightness FROM WmiMonitorBrightness WHERE Active=TRUE")?;
-        let current = rows
-            .first()
-            .and_then(|r| r.get("CurrentBrightness"))
-            .and_then(|v| match v {
-                Variant::UI1(n) => Some(*n as i32),
-                Variant::UI4(n) => Some(*n as i32),
-                Variant::I4(n) => Some(*n),
-                _ => None,
-            })
-            .ok_or_else(|| io::Error::other("No active WMI brightness display"))?;
-        let methods =
-            con.exec_query("SELECT * FROM WmiMonitorBrightnessMethods WHERE Active=TRUE")?;
-        for row in methods {
-            let row = row?;
-            let params = con
-                .get_object("WmiMonitorBrightnessMethods")?
-                .get_method("WmiSetBrightness")?
-                .ok_or_else(|| io::Error::other("Missing WmiSetBrightness"))?
-                .spawn_instance()?;
-            params.put_property("Timeout", Variant::UI4(1))?;
-            params.put_property(
-                "Brightness",
-                Variant::UI1((current + delta).clamp(0, 100) as u8),
+// COM objects stay on the action thread. Failed sessions are discarded and rebuilt once.
+#[derive(Default)]
+struct Brightness {
+    session: Option<BrightnessSession>,
+}
+struct BrightnessSession {
+    con: wmi::WMIConnection,
+    paths: Vec<String>,
+    params: wmi::IWbemClassWrapper,
+    current: i32,
+    last: Option<Instant>,
+}
+fn brightness_needs_resync(last: Option<Instant>, now: Instant) -> bool {
+    last.is_none_or(|last| now.duration_since(last) > std::time::Duration::from_secs(1))
+}
+impl BrightnessSession {
+    fn connect() -> Result<Self, Box<dyn std::error::Error>> {
+        let con = wmi::WMIConnection::with_namespace_path("ROOT\\WMI")?;
+        let paths = con
+            .exec_query("SELECT * FROM WmiMonitorBrightnessMethods WHERE Active=TRUE")?
+            .map(|row| row.and_then(|row| row.path()))
+            .collect::<Result<Vec<_>, _>>()?;
+        let params = con
+            .get_object("WmiMonitorBrightnessMethods")?
+            .get_method("WmiSetBrightness")?
+            .ok_or_else(|| io::Error::other("Missing WmiSetBrightness"))?
+            .spawn_instance()?;
+        params.put_property("Timeout", wmi::Variant::UI4(1))?;
+        Ok(Self {
+            con,
+            paths,
+            params,
+            current: 0,
+            last: None,
+        })
+    }
+    fn adjust(&mut self, delta: i32) -> Result<(), Box<dyn std::error::Error>> {
+        use wmi::Variant;
+        let now = Instant::now();
+        if brightness_needs_resync(self.last, now) {
+            let rows: Vec<HashMap<String, Variant>> = self.con.raw_query(
+                "SELECT CurrentBrightness FROM WmiMonitorBrightness WHERE Active=TRUE",
             )?;
-            con.exec_method(row.path()?, "WmiSetBrightness", Some(&params))?;
+            self.current = rows
+                .first()
+                .and_then(|r| r.get("CurrentBrightness"))
+                .and_then(|v| match v {
+                    Variant::UI1(n) => Some(*n as i32),
+                    Variant::UI4(n) => Some(*n as i32),
+                    Variant::I4(n) => Some(*n),
+                    _ => None,
+                })
+                .ok_or_else(|| io::Error::other("No active WMI brightness display"))?;
         }
+        let next = self.current.saturating_add(delta).clamp(0, 100);
+        self.params
+            .put_property("Brightness", Variant::UI1(next as u8))?;
+        for path in &self.paths {
+            if let Some(result) =
+                self.con
+                    .exec_method(path, "WmiSetBrightness", Some(&self.params))?
+            {
+                match result.get_property("ReturnValue")? {
+                    Variant::UI4(0) | Variant::I4(0) => {}
+                    status => {
+                        return Err(io::Error::other(format!(
+                            "WmiSetBrightness failed: {status:?}"
+                        ))
+                        .into())
+                    }
+                }
+            }
+        }
+        self.current = next;
+        self.last = Some(Instant::now());
         Ok(())
-    };
-    run().map_err(|e| io::Error::other(e.to_string()))
+    }
+}
+impl Brightness {
+    fn adjust(&mut self, delta: i32) -> io::Result<()> {
+        for attempt in 0..2 {
+            let result = (|| {
+                if self.session.is_none() {
+                    self.session = Some(BrightnessSession::connect()?);
+                }
+                self.session.as_mut().unwrap().adjust(delta)
+            })();
+            match result {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    self.session = None;
+                    if attempt == 1 {
+                        return Err(io::Error::other(e.to_string()));
+                    }
+                }
+            }
+        }
+        unreachable!()
+    }
+}
+#[cfg(test)]
+mod brightness_tests {
+    use super::*;
+    #[test]
+    fn resync_at_start_and_after_idle() {
+        let start = Instant::now();
+        assert!(brightness_needs_resync(None, start));
+        assert!(!brightness_needs_resync(
+            Some(start),
+            start + std::time::Duration::from_millis(999)
+        ));
+        assert!(!brightness_needs_resync(
+            Some(start),
+            start + std::time::Duration::from_secs(1)
+        ));
+        assert!(brightness_needs_resync(
+            Some(start),
+            start + std::time::Duration::from_millis(1001)
+        ));
+    }
 }
 pub fn windows_conflicts(c: &Config) -> Vec<Conflict> {
     let mut out = vec![];

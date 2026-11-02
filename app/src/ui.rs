@@ -17,10 +17,22 @@ pub struct Model {
     pub config: Config,
     pub warning: String,
     pub engine: Rc<RefCell<Option<Engine>>>,
+    pub autostart: bool,
+    pub appearance: (bool, u32),
+    pub conflicts: Vec<Conflict>,
+    pub events: async_channel::Sender<crate::AppEvent>,
     pub flash: Option<(String, Instant)>,
 }
 impl Model {
+    pub fn refresh_platform(&mut self) {
+        self.autostart = crate::platform::autostart();
+        self.appearance = crate::platform::appearance();
+        self.conflicts = windows_conflicts(&self.config);
+        let _ = self.events.try_send(crate::AppEvent::Refresh);
+    }
     pub fn save(&mut self) {
+        self.conflicts = windows_conflicts(&self.config);
+        let _ = self.events.try_send(crate::AppEvent::Refresh);
         let errors = validate(&self.config);
         if !errors.is_empty() {
             self.warning = errors.join(" · ");
@@ -87,6 +99,18 @@ impl Settings {
                     *step = value.start() as f64;
                     m.save();
                 }
+                cx.notify();
+            }));
+        this.subscriptions
+            .push(cx.observe_window_activation(w, |this, w, cx| {
+                if w.is_window_active() {
+                    this.model.borrow_mut().refresh_platform();
+                    cx.notify();
+                }
+            }));
+        this.subscriptions
+            .push(cx.observe_window_appearance(w, |this, _, cx| {
+                this.model.borrow_mut().appearance = crate::platform::appearance();
                 cx.notify();
             }));
         this.sync_fields(w, cx);
@@ -201,7 +225,7 @@ fn caption(a: &Action) -> String {
 }
 impl Render for Settings {
     fn render(&mut self, w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let (light, accent) = crate::platform::appearance();
+        let (light, accent) = self.model.borrow().appearance;
         let (bg, card, fg, muted, line) = if light {
             (0xf3f3f3, 0xffffff, 0x202020, 0x666666, 0xdddddd)
         } else {
@@ -238,7 +262,9 @@ impl Render for Settings {
             colors.primary_foreground =
                 rgb(if primary.l > 0.6 { 0x101010 } else { 0xffffff }).into();
         }
-        let config = self.model.borrow().config.clone();
+        let selected_action = self.action();
+        let model = self.model.borrow();
+        let config = &model.config;
         let mut nav = div()
             .id("gestures")
             .w(px(288.))
@@ -482,16 +508,17 @@ impl Render for Settings {
                             "Keep Touch available in the notification area.",
                             muted,
                         ))
-                        .child(
-                            Switch::new("autostart")
-                                .checked(crate::platform::autostart())
-                                .on_click(cx.listener(|s, on, _, cx| {
-                                    if let Err(e) = crate::platform::set_autostart(*on) {
-                                        s.model.borrow_mut().warning = e.to_string();
-                                    }
-                                    cx.notify();
-                                })),
-                        ),
+                        .child(Switch::new("autostart").checked(model.autostart).on_click(
+                            cx.listener(|s, on, _, cx| {
+                                if let Err(e) = crate::platform::set_autostart(*on) {
+                                    s.model.borrow_mut().warning = e.to_string();
+                                }
+                                let mut m = s.model.borrow_mut();
+                                m.autostart = crate::platform::autostart();
+                                let _ = m.events.try_send(crate::AppEvent::Refresh);
+                                cx.notify();
+                            }),
+                        )),
                 )
                 .child(
                     setting_card(card, line)
@@ -543,7 +570,8 @@ impl Render for Settings {
             if config.drag3 && (t.id.starts_with("swipe3") || t.id == "tap3") {
                 panel = panel.child("Disabled while three-finger drag is on.");
             }
-            for conflict in windows_conflicts(&config)
+            for conflict in model
+                .conflicts
                 .iter()
                 .filter(|c| t.id.starts_with(c.trigger_prefix))
             {
@@ -577,7 +605,7 @@ impl Render for Settings {
             if !t.continuous {
                 panel = panel.child(
                     setting_card(card, line)
-                        .child(setting_text("Action", &caption(&self.action()), muted))
+                        .child(setting_text("Action", &caption(&selected_action), muted))
                         .child(Button::new("test").outline().label("Test action").on_click(
                             cx.listener(|s, _, _, _| {
                                 if let Some(e) = s.model.borrow().engine.borrow().as_ref() {
@@ -593,8 +621,8 @@ impl Render for Settings {
                         .w(px(148.))
                         .h(px(38.))
                         .outline()
-                        .selected(matches!(self.action(), Action::None))
-                        .when(matches!(self.action(), Action::None), |b| {
+                        .selected(matches!(selected_action, Action::None))
+                        .when(matches!(selected_action, Action::None), |b| {
                             b.border_color(rgb(accent)).bg(rgba((accent << 8) | 0x1f))
                         })
                         .label("Not assigned")
@@ -602,7 +630,7 @@ impl Render for Settings {
                 );
                 for info in adjust_targets() {
                     let target = info.target;
-                    let selected = matches!(self.action(), Action::Adjust { target: ref current, .. } if adjust_info(current).target == target);
+                    let selected = matches!(selected_action, Action::Adjust { target: ref current, .. } if adjust_info(current).target == target);
                     targets = targets.child(
                         Button::new(target)
                             .outline()
@@ -755,8 +783,8 @@ impl Render for Settings {
                         .child(
                             Button::new("none")
                                 .outline()
-                                .selected(matches!(self.action(), Action::None))
-                                .when(matches!(self.action(), Action::None), |b| {
+                                .selected(matches!(selected_action, Action::None))
+                                .when(matches!(selected_action, Action::None), |b| {
                                     b.border_color(rgb(accent)).bg(rgba((accent << 8) | 0x1f))
                                 })
                                 .label("Not assigned")
@@ -765,8 +793,8 @@ impl Render for Settings {
                         .child(
                             Button::new("keys")
                                 .outline()
-                                .selected(matches!(self.action(), Action::Keys { .. }))
-                                .when(matches!(self.action(), Action::Keys { .. }), |b| {
+                                .selected(matches!(selected_action, Action::Keys { .. }))
+                                .when(matches!(selected_action, Action::Keys { .. }), |b| {
                                     b.border_color(rgb(accent)).bg(rgba((accent << 8) | 0x1f))
                                 })
                                 .label("Custom keys")
@@ -783,8 +811,8 @@ impl Render for Settings {
                         .child(
                             Button::new("launch")
                                 .outline()
-                                .selected(matches!(self.action(), Action::Launch { .. }))
-                                .when(matches!(self.action(), Action::Launch { .. }), |b| {
+                                .selected(matches!(selected_action, Action::Launch { .. }))
+                                .when(matches!(selected_action, Action::Launch { .. }), |b| {
                                     b.border_color(rgb(accent)).bg(rgba((accent << 8) | 0x1f))
                                 })
                                 .label("Launch app")
@@ -802,8 +830,8 @@ impl Render for Settings {
                         .child(
                             Button::new("url")
                                 .outline()
-                                .selected(matches!(self.action(), Action::Url { .. }))
-                                .when(matches!(self.action(), Action::Url { .. }), |b| {
+                                .selected(matches!(selected_action, Action::Url { .. }))
+                                .when(matches!(selected_action, Action::Url { .. }), |b| {
                                     b.border_color(rgb(accent)).bg(rgba((accent << 8) | 0x1f))
                                 })
                                 .label("Open URL")
@@ -818,7 +846,7 @@ impl Render for Settings {
                                 })),
                         ),
                 );
-                match self.action() {
+                match &selected_action {
                     Action::Keys { .. } => {
                         panel = panel
                             .child(Input::new(&self.fields[0]))
@@ -899,7 +927,7 @@ impl Render for Settings {
                         .gap_2();
                     for p in presets().iter().filter(|p| p.group == group) {
                         let name = p.name;
-                        let selected = matches!(self.action(), Action::Preset { name: ref current } if current == name);
+                        let selected = matches!(selected_action, Action::Preset { name: ref current } if current == name);
                         buttons = buttons.child(
                             Button::new(name)
                                 .outline()
