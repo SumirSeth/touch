@@ -11,18 +11,18 @@ recognisers (`Gestures.cs`), brightness through WMI (`Brightness.cs`), key injec
 mods or hooks (no Windhawk etc.). Ordinary crates are fine.
 
 Working product name: **Trackpad Gestures** (may change before release; keep it in one place per file type:
-`tauri.conf.json` `productName`, and the `APP_NAME` const in the engine).
+the `PRODUCT_NAME` const in the app, the packager config, and the `APP_NAME` const in the engine).
 
 ## Stack and layout
 
-Rust, Tauri v2 for the settings window and tray. The UI is plain HTML/CSS/JS (ES modules, no framework, no npm build
-step) served from `app/ui/`. Bundled with `cargo tauri build` (NSIS installer + MSI).
+Rust throughout. The settings window uses **GPUI** (Zed's GPU-accelerated UI framework; DirectX 11 on Windows), no
+webview. The tray icon uses the `tray-icon` crate (or plain `Shell_NotifyIconW`) driven from GPUI's main-thread message
+loop. Installers are built with `cargo-packager` (NSIS + MSI) or an equivalent script; no Tauri.
 
 ```
-Cargo.toml                 workspace: crates/engine, app/src-tauri
-crates/engine/             library crate `gestures_engine`: raw input, recognisers, actions, config. No UI, no Tauri.
-app/src-tauri/             Tauri app: tray, settings window, autostart, glue to the engine
-app/ui/                    settings UI (index.html, *.js, *.css)
+Cargo.toml                 workspace: crates/engine, app
+crates/engine/             library crate `gestures_engine`: raw input, recognisers, actions, config. No UI.
+app/                       binary crate: GPUI settings window, tray, autostart, glue to the engine, packaging config
 .github/workflows/         CI (build + test) and release (tag -> installer artifacts on a draft GitHub release)
 ```
 
@@ -30,11 +30,11 @@ Target: x86_64-pc-windows-msvc, Windows 10 1809+ (tested on Windows 11). Rust st
 
 ## Process model
 
-One process. Tauri owns the main thread. The engine runs on its own thread with a hidden (not message-only) window
+One process. GPUI owns the main thread. The engine runs on its own thread with a hidden (not message-only) window
 that registers Raw Input for usage page 0x0D / usage 0x05 with `RIDEV_INPUTSINK`, and its own message loop. Actions
 run on a separate worker thread so slow ones (WMI brightness, launching apps) never stall input. The settings window
-is created on demand and destroyed when closed (so WebView2 isn't resident while idle); the app keeps running in the
-tray. Single instance: a second launch opens the settings window of the running instance.
+is created on demand and closed (not hidden) when dismissed, so GPU resources aren't held while idle; the app keeps
+running in the tray. Single instance: a second launch opens the settings window of the running instance.
 
 ## Gestures (triggers)
 
@@ -179,7 +179,7 @@ cases that apply carry over as Rust tests.
 
 ## Settings UI
 
-One window (~900x640, resizable, follows the Windows light/dark theme, Mica if easy):
+One window (~900x640, resizable, follows the Windows light/dark theme, Mica if GPUI supports it):
 
 - Left: gesture list grouped (Edges, Corners, 3 fingers, 4 fingers, 5 fingers), each row showing the trigger label
   and its current action, with a small diagram of the touchpad highlighting the zone/finger count.
@@ -196,8 +196,8 @@ Tray: left-click opens settings; menu: Settings, Pause gestures (checkable), Sta
 
 ## Release
 
-- `cargo tauri build` produces NSIS `.exe` and `.msi` in `target/release/bundle/`.
-- Version from the workspace `Cargo.toml` / `tauri.conf.json` (start at 0.1.0).
+- One documented command (e.g. `cargo packager --release`) produces an NSIS `.exe` and an `.msi`.
+- Version from the workspace `Cargo.toml` (start at 0.1.0).
 - GitHub Actions: `ci.yml` (fmt check, clippy, tests, build on windows-latest), `release.yml` on `v*` tags builds the
   installers and uploads them to a **draft** release. Unsigned for now (SmartScreen will warn; signing is a later
   decision). No secrets required.
