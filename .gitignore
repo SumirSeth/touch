@@ -1,0 +1,5 @@
+*.exe
+# Research scratch: downloaded Microsoft PDBs and screenshots of the user's desktop
+trackpad/research/scratch-*/
+
+*.log
