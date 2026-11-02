@@ -1,43 +1,57 @@
-# Trackpad Gestures
+# Touch
 
-A Windows 11 tray app for custom Precision Touchpad gestures, with native GPU-rendered GPUI settings. Bind edge slides, corner holds, swipes, taps, pinches and rotations to shortcuts, apps, URLs, volume, brightness and more. Pointer movement, scrolling and clicks remain Windows' own.
+Custom touchpad gestures for Windows 11. Touch runs in the tray and lets you choose what each gesture does: slide
+along an edge to change volume, brightness or seek a video, hold a corner to play/pause, swipe with three or four
+fingers to switch desktops, pinch with five fingers for Task View, or bind any gesture to a shortcut, an app or a URL.
 
-**This branch uses a temporary engine stub.** Configuration and settings work; hardware recognition and action execution arrive when the engine branch is integrated. Debug builds flash the right-edge row periodically to demonstrate gesture feedback. The Test button calls the engine API; the stub deliberately performs no action.
+Pointer movement, scrolling and clicks stay Windows' own; Touch only adds gestures on top.
 
-## Install and use
+## Gestures
 
-Install the NSIS `.exe` from a release for a per-user installation (no administrator required). The `.msi` uses cargo-packager's default per-machine installation and may request elevation. Installers are unsigned. Start Trackpad Gestures, then use the tray icon to reopen settings. Closing settings destroys the window and leaves the tray running; Quit exits the process. A second launch opens or focuses the existing settings window.
+| Gesture | Default |
+|---|---|
+| Slide along the right / top / bottom / left edge (one finger) | brightness / volume / seek (arrow keys) / unassigned |
+| Hold still in a corner (one finger) | top-left play/pause, top-right mute |
+| 3- and 4-finger swipes (up, down, left, right) and taps | unassigned |
+| 4-finger twist | volume knob |
+| 5-finger pinch in/out | Task View |
+| 5-finger twist clockwise / anticlockwise | reopen tab / close tab |
 
-**Set Windows' own 3/4-finger gesture to “Nothing” for each gesture you rebind**, otherwise both Windows and Trackpad Gestures handle it. The editor reports conflicts and links to Windows touchpad settings. Three-finger drag disables three-finger swipes and tap.
+Edge slides and the 4-finger twist can drive volume, brightness, seek, horizontal scroll, zoom, tabs, virtual
+desktops or your own pair of shortcuts, with adjustable sensitivity. The other gestures can run a preset (Task View,
+show desktop, snap, tabs, media, screenshot, lock...), any key combination, an app or a URL. There is also an optional
+3-finger drag.
 
-Settings save immediately to `%APPDATA%\TrackpadGestures\config.json`. Invalid input displays an error and is not pushed to the engine. Malformed configuration is backed up as `config.json.bad`. Start with Windows is stored separately in the current user's Run registry key and starts with `--background` (tray only).
+**If you rebind a 3- or 4-finger gesture, set Windows' own gesture for that finger count to "Nothing"**
+(Settings > Bluetooth & devices > Touchpad), otherwise both run. Touch shows a warning with a shortcut to that page.
+
+## Install
+
+Download `touch_<version>_x64-setup.exe` from [Releases](https://github.com/SumirSeth/touch/releases) and run it
+(per-user install, no administrator needed; an `.msi` is also provided). The installers aren't code-signed yet, so
+SmartScreen may warn: choose **More info > Run anyway**.
+
+Requires Windows 10 1809 or later with a Precision Touchpad (most laptops from the last several years).
+
+Touch starts in the tray. Click the icon for settings; right-click for Pause, Start with Windows and Quit. Settings
+save immediately to `%APPDATA%\Touch\config.json`.
 
 ## Build from source
 
-Requires x64 Windows, stable Rust (tested with 1.99.1, MSVC target), Visual Studio Build Tools with C++ and a Windows SDK. GPUI uses DirectX 11; a functioning GPU driver is required.
+Needs x64 Windows, stable Rust (MSVC), and Visual Studio Build Tools with the C++ workload and a Windows SDK.
 
 ```powershell
-cargo run -p trackpad-gestures
-cargo fmt --check
-cargo clippy --workspace -- -D warnings
-cargo test --workspace
-cargo build --release
+cargo run -p touch                 # run
+cargo test --workspace             # tests (gesture recognisers run on synthetic frames, no hardware needed)
+powershell -ExecutionPolicy Bypass -File app/scripts/package.ps1   # NSIS + MSI installers in target/installers/
 ```
 
-Generate both installers with one command from the repository root:
+Layout: `crates/engine` reads the touchpad through Raw Input, recognises gestures and runs actions; `app` is the tray
+and the GPUI settings window. GPUI 0.2.2 is vendored in `app/vendor/gpui` with two small patches (see `PATCH.md`
+there). `docs/app-spec.md` describes the design. `trackpad/` holds the original C# prototype and research notes.
 
-```powershell
-powershell -ExecutionPolicy Bypass -File app/scripts/package.ps1
-```
+Releases: push a `vX.Y.Z` tag; GitHub Actions builds the installers into a draft release.
 
-The script generates the original PNG/ICO icon, installs cargo-packager 0.11.8 if missing, builds release, reads the workspace package version, then creates NSIS and MSI installers in `target/installers/`. cargo-packager downloads NSIS and WiX tooling automatically. Release executables use the Windows subsystem with no console. The `v*` tag workflow uploads installers to a draft GitHub release using GitHub's built-in token; it needs no separately configured secret or signing key.
+## License
 
-## Implementation and engine integration
-
-GPUI is pinned to **0.2.2** from crates.io; gpui-component is pinned to **0.5.1**, which depends on that GPUI release. Native component inputs, buttons, switches and slider provide keyboard focus and editing; diagrams are GPUI elements. No webview feature is enabled. Segoe UI Variable, Windows light/dark settings and the current accent colour style the window. Mica is not enabled.
-
-GPUI owns the main thread and pumps the tray's native Win32 messages. The vendored GPUI 0.2.2 Windows backend has a one-expression patch in `close_one_window`: return false after removing the window, instead of requesting process quit when the list is empty. Upstream 0.2.2 otherwise posts WM_QUIT on the final close. A second build-script patch discovers installed SDK versions for fxc.exe instead of requiring SDK 26100. A foreground async task retains the tray and engine, drains tray events and checks a named auto-reset event; settings is recreated on demand. The instance mutex is `Local\TrackpadGestures.GPUI.v1.Instance`, distinct from the C# prototype's mutex. Only this application's instance is signalled.
-
-`app/engine-stub` mirrors the API in `docs/app-spec.md`, including JSON serialization, defaults, validation, conflict detection and atomic save. To integrate the real engine, change `gestures_engine = { path = "engine-stub" }` in `app/Cargo.toml` to `gestures_engine = { path = "../crates/engine" }`, and update the workspace members. The app intentionally obtains catalogue data from the engine. The spec's custom adjust target is serialized as `"target":"custom","increase":"…","decrease":"…"` alongside `step` and `reverse`.
-
-The editor lists grouped preset buttons instead of a dropdown. Use Tab/Shift+Tab to move through controls. The chord recorder uses GPUI's modifier state (including the Windows key); enable Include Win for combinations the OS consumes. Windows-reserved shortcuts cannot all be recorded directly.
+MIT
