@@ -1,0 +1,26 @@
+{
+  "name": "touch",
+  "productName": "Touch",
+  "version": "0.1.0",
+  "identifier": "com.sumirseth.touch",
+  "publisher": "Sumir Seth",
+  "description": "Custom touchpad gestures for Windows",
+  "binaries": [
+    {
+      "path": "touch",
+      "main": true
+    }
+  ],
+  "binariesDir": "../target/release",
+  "outDir": "../target/installers",
+  "formats": [
+    "nsis",
+    "wix"
+  ],
+  "icons": [
+    "assets/icon.ico"
+  ],
+  "nsis": {
+    "installMode": "currentUser"
+  }
+}

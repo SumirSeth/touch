@@ -1,8 +1,16 @@
 [workspace]
-members = ["crates/engine"]
+members = ["crates/engine", "app"]
 resolver = "2"
+exclude = ["app/vendor/gpui"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
+
+[profile.release]
+opt-level = "s"
+strip = true
+
+[patch.crates-io]
+gpui = { path = "app/vendor/gpui" }

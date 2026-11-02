@@ -9,7 +9,7 @@ mod platform;
 pub use platform::{windows_conflicts, Engine};
 
 use serde::{Deserialize, Serialize};
-pub const APP_NAME: &str = "TrackpadGestures";
+pub const APP_NAME: &str = "Touch";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Conflict {
