@@ -6608,6 +6608,8 @@ checksum = "06bdbd8cfc056b8d2e2e85f29b56a3bdbecb527cef81eb39e3e7b98af4652770"
 name = "touch"
 version = "0.1.0"
 dependencies = [
+ "async-channel 2.5.0",
+ "futures-lite 2.6.1",
  "gestures_engine",
  "gpui",
  "gpui-component",

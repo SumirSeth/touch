@@ -22,6 +22,50 @@ pub struct Model {
     pub conflicts: Vec<Conflict>,
     pub events: async_channel::Sender<crate::AppEvent>,
     pub flash: Option<(String, Instant)>,
+    pub writer: ConfigWriter,
+}
+/// Writes the config file on a background thread, coalescing bursts (slider drags, typing) into one write
+/// shortly after the last change, so the UI thread never waits on the disk.
+pub struct ConfigWriter {
+    tx: Option<std::sync::mpsc::Sender<Config>>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+impl ConfigWriter {
+    const DEBOUNCE: Duration = Duration::from_millis(400);
+    pub fn new(events: async_channel::Sender<crate::AppEvent>) -> Self {
+        let (tx, rx) = std::sync::mpsc::channel::<Config>();
+        let thread = std::thread::Builder::new()
+            .name("config-writer".into())
+            .spawn(move || {
+                while let Ok(mut latest) = rx.recv() {
+                    // Keep taking newer configs until changes stop (or the app quits).
+                    while let Ok(next) = rx.recv_timeout(Self::DEBOUNCE) {
+                        latest = next;
+                    }
+                    if let Err(e) = save_config(&latest) {
+                        let error = EngineEvent::Error(format!("Couldn't save settings: {e}"));
+                        let _ = events.send_blocking(crate::AppEvent::Engine(error));
+                    }
+                }
+            })
+            .expect("config writer thread");
+        Self {
+            tx: Some(tx),
+            thread: Some(thread),
+        }
+    }
+    fn write(&self, config: Config) {
+        if let Some(tx) = &self.tx {
+            let _ = tx.send(config);
+        }
+    }
+    /// Writes any pending change now and stops the thread. Call before quitting.
+    pub fn flush(&mut self) {
+        self.tx.take();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
 }
 impl Model {
     pub fn refresh_platform(&mut self) {
@@ -38,15 +82,11 @@ impl Model {
             self.warning = errors.join(" · ");
             return;
         }
-        match save_config(&self.config) {
-            Ok(()) => {
-                self.warning.clear();
-                if let Some(e) = self.engine.borrow().as_ref() {
-                    e.set_config(self.config.clone());
-                }
-            }
-            Err(e) => self.warning = e.to_string(),
+        self.warning.clear();
+        if let Some(e) = self.engine.borrow().as_ref() {
+            e.set_config(self.config.clone());
         }
+        self.writer.write(self.config.clone());
     }
 }
 pub struct Settings {

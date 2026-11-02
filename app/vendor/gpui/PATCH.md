@@ -19,3 +19,7 @@ License: LICENSE-APACHE. Source: https://crates.io/crates/gpui/0.2.2
 fxc.exe when the upstream PATH/26100-only lookup fails. Tested with SDK 22000.
 
 The `examples/` directory and its `[[example]]` manifest entries were removed to keep the repository small; they aren't needed to build.
+
+The vsync thread (`begin_vsync_thread` in `src/platform/windows/platform.rs`) parks while no window is open and is
+unparked by `open_window`. Upstream wakes it at the display refresh rate forever, which kept the tray-only app
+using CPU.

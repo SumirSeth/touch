@@ -40,6 +40,8 @@ pub(crate) struct WindowsPlatform {
     drop_target_helper: IDropTargetHelper,
     handle: HWND,
     disable_direct_composition: bool,
+    // Touch patch: the vsync thread parks while no window is open; opening a window unparks it.
+    vsync_thread: std::sync::OnceLock<std::thread::Thread>,
 }
 
 struct WindowsPlatformInner {
@@ -158,6 +160,7 @@ impl WindowsPlatform {
             disable_direct_composition,
             windows_version,
             drop_target_helper,
+            vsync_thread: std::sync::OnceLock::new(),
         })
     }
 
@@ -243,11 +246,22 @@ impl WindowsPlatform {
         let validation_number = self.inner.validation_number;
         let all_windows = Arc::downgrade(&self.raw_window_handles);
         let text_system = Arc::downgrade(&self.text_system);
-        std::thread::Builder::new()
+        let thread = std::thread::Builder::new()
             .name("VSyncProvider".to_owned())
             .spawn(move || {
                 let vsync_provider = VSyncProvider::new();
                 loop {
+                    // Touch patch: with no windows there is nothing to redraw, so sleep until
+                    // `open_window` unparks us instead of waking at the display refresh rate.
+                    match all_windows.upgrade() {
+                        None => break,
+                        Some(windows) if windows.read().is_empty() => {
+                            drop(windows);
+                            std::thread::park();
+                            continue;
+                        }
+                        Some(_) => {}
+                    }
                     vsync_provider.wait_for_vsync();
                     if check_device_lost(&directx_device.device) {
                         handle_gpu_device_lost(
@@ -269,6 +283,7 @@ impl WindowsPlatform {
                 }
             })
             .unwrap();
+        let _ = self.vsync_thread.set(thread.thread().clone());
     }
 }
 
@@ -413,6 +428,9 @@ impl Platform for WindowsPlatform {
         let window = WindowsWindow::new(handle, options, self.generate_creation_info())?;
         let handle = window.get_raw_handle();
         self.raw_window_handles.write().push(handle.into());
+        if let Some(thread) = self.vsync_thread.get() {
+            thread.unpark();
+        }
 
         Ok(Box::new(window))
     }

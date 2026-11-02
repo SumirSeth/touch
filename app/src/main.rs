@@ -46,6 +46,7 @@ fn main() {
             appearance: (true, 0x0067c0),
             conflicts: Vec::new(),
             events: event_tx.clone(),
+            writer: ui::ConfigWriter::new(event_tx.clone()),
         }));
         let menu = Menu::new();
         let settings = MenuItem::new("Settings", true, None);
@@ -113,6 +114,7 @@ fn main() {
                                 if let Some(e) = engine.borrow_mut().take() {
                                     e.stop();
                                 }
+                                model.borrow_mut().writer.flush();
                                 cx.quit();
                                 return;
                             }
@@ -125,6 +127,7 @@ fn main() {
                                     if let Some(e) = engine.borrow_mut().take() {
                                         e.stop();
                                     }
+                                    model.borrow_mut().writer.flush();
                                     cx.quit();
                                     return;
                                 }
