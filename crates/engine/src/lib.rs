@@ -6,7 +6,7 @@ pub mod gestures;
 #[cfg(windows)]
 mod platform;
 #[cfg(windows)]
-pub use platform::{windows_conflicts, Engine};
+pub use platform::{perform, windows_conflicts, Engine};
 
 use serde::{Deserialize, Serialize};
 pub const APP_NAME: &str = "Touch";
@@ -28,6 +28,10 @@ pub enum EngineEvent {
 #[cfg(not(windows))]
 pub fn windows_conflicts(_: &Config) -> Vec<Conflict> {
     vec![]
+}
+#[cfg(not(windows))]
+pub fn perform(_: &Action) -> std::io::Result<()> {
+    Ok(())
 }
 #[cfg(not(windows))]
 pub struct Engine;

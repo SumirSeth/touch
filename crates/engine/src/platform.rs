@@ -768,6 +768,14 @@ fn shell(path: &str, args: Option<&str>) -> io::Result<()> {
         Ok(())
     }
 }
+/// Runs a discrete action once on the calling thread (the settings window's Test button). Continuous
+/// (adjust) actions need a gesture and are ignored.
+pub fn perform(action: &Action) -> io::Result<()> {
+    if matches!(action, Action::Adjust { .. }) {
+        return Ok(());
+    }
+    execute(action, 0, &mut Brightness::default())
+}
 fn execute(action: &Action, steps: i32, brightness: &mut Brightness) -> io::Result<()> {
     match action {
         Action::None => Ok(()),

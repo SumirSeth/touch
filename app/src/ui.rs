@@ -16,7 +16,6 @@ use std::{
 pub struct Model {
     pub config: Config,
     pub warning: String,
-    pub engine: Rc<RefCell<Option<Engine>>>,
     pub autostart: bool,
     pub appearance: (bool, u32),
     pub conflicts: Vec<Conflict>,
@@ -25,13 +24,14 @@ pub struct Model {
     pub writer: ConfigWriter,
 }
 /// Writes the config file on a background thread, coalescing bursts (slider drags, typing) into one write
-/// shortly after the last change, so the UI thread never waits on the disk.
+/// shortly after the last change, so the UI thread never waits on the disk. After each write the background
+/// agent is told to reload it.
 pub struct ConfigWriter {
     tx: Option<std::sync::mpsc::Sender<Config>>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 impl ConfigWriter {
-    const DEBOUNCE: Duration = Duration::from_millis(400);
+    const DEBOUNCE: Duration = Duration::from_millis(250);
     pub fn new(events: async_channel::Sender<crate::AppEvent>) -> Self {
         let (tx, rx) = std::sync::mpsc::channel::<Config>();
         let thread = std::thread::Builder::new()
@@ -42,9 +42,12 @@ impl ConfigWriter {
                     while let Ok(next) = rx.recv_timeout(Self::DEBOUNCE) {
                         latest = next;
                     }
-                    if let Err(e) = save_config(&latest) {
-                        let error = EngineEvent::Error(format!("Couldn't save settings: {e}"));
-                        let _ = events.send_blocking(crate::AppEvent::Engine(error));
+                    match save_config(&latest) {
+                        Ok(()) => crate::ipc::signal(crate::ipc::AGENT_RELOAD),
+                        Err(e) => {
+                            let error = format!("Couldn't save settings: {e}");
+                            let _ = events.send_blocking(crate::AppEvent::Error(error));
+                        }
                     }
                 }
             })
@@ -83,9 +86,6 @@ impl Model {
             return;
         }
         self.warning.clear();
-        if let Some(e) = self.engine.borrow().as_ref() {
-            e.set_config(self.config.clone());
-        }
         self.writer.write(self.config.clone());
     }
 }
@@ -648,9 +648,14 @@ impl Render for Settings {
                         .child(setting_text("Action", &caption(&selected_action), muted))
                         .child(Button::new("test").outline().label("Test action").on_click(
                             cx.listener(|s, _, _, _| {
-                                if let Some(e) = s.model.borrow().engine.borrow().as_ref() {
-                                    e.run_action(&s.action());
-                                }
+                                let action = s.action();
+                                let events = s.model.borrow().events.clone();
+                                std::thread::spawn(move || {
+                                    if let Err(e) = perform(&action) {
+                                        let _ = events
+                                            .send_blocking(crate::AppEvent::Error(e.to_string()));
+                                    }
+                                });
                             }),
                         )),
                 );

@@ -30,11 +30,20 @@ Target: x86_64-pc-windows-msvc, Windows 10 1809+ (tested on Windows 11). Rust st
 
 ## Process model
 
-One process. GPUI owns the main thread. The engine runs on its own thread with a hidden (not message-only) window
-that registers Raw Input for usage page 0x0D / usage 0x05 with `RIDEV_INPUTSINK`, and its own message loop. Actions
-run on a separate worker thread so slow ones (WMI brightness, launching apps) never stall input. The settings window
-is created on demand and closed (not hidden) when dismissed, so GPU resources aren't held while idle; the app keeps
-running in the tray. Single instance: a second launch opens the settings window of the running instance.
+Two processes from one executable:
+
+- **Agent** (`touch.exe`, `--background` at login): headless. The gesture engine, the tray icon and a plain Win32
+  message loop; GPUI is never initialised (about 13 MB, no CPU while idle). The engine runs on its own thread with a
+  hidden (not message-only) window that registers Raw Input for usage page 0x0D / usage 0x05 with
+  `RIDEV_INPUTSINK`. Actions run on a separate worker thread so slow ones (WMI brightness, launching apps) never
+  stall input.
+- **Settings** (`touch.exe --settings`): the GPUI window, started on demand and exiting when the window closes. It
+  writes the config file (debounced, off the UI thread) and signals the agent to reload it.
+
+IPC (`app/src/ipc.rs`): named mutexes for single instance (`Local\Touch.Agent.v1`, `Local\Touch.Settings.v1`);
+named auto-reset events for requests (agent: Open, Quit, Reload; settings: Focus, Reload); gesture flashes are
+`WM_APP + 1` posted to the settings process's message-only window `Touch.Settings.v1.Flash`, with the trigger's
+index in `triggers()`. A second launch of `touch.exe` opens settings; `touch.exe --quit` stops the agent.
 
 ## Gestures (triggers)
 

@@ -159,12 +159,13 @@ powershell -ExecutionPolicy Bypass -File app/scripts/package.ps1
 
 ```
 crates/engine/   gestures_engine: reads the touchpad (Raw Input + HID), recognises gestures, runs actions, config
-app/             the tray app and GPUI settings window
+app/             touch.exe: the headless tray agent, and the GPUI settings window (--settings)
 app/vendor/gpui/ GPUI 0.2.2 with two small Windows patches (see PATCH.md there)
 docs/            design notes and screenshots
 ```
 
-How it works: the engine registers for Precision Touchpad reports with `RIDEV_INPUTSINK` on its own thread. It
+How it works: `touch.exe` runs as a small headless agent (the engine and the tray icon, about 13 MB, no CPU while
+idle). The settings window is the same executable started with `--settings`, and it exits when you close it. The engine registers for Precision Touchpad reports with `RIDEV_INPUTSINK` on its own thread. It
 rebuilds each scan of the pad into a frame of contacts in millimetres and feeds it to pure recognisers. Those emit
 events that an action worker carries out. See [`docs/app-spec.md`](docs/app-spec.md) for the full design.
 
