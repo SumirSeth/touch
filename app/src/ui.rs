@@ -2,7 +2,7 @@ use gestures_engine::Action;
 use gestures_engine::*;
 use gpui::{prelude::*, *};
 use gpui_component::{
-    Sizable,
+    Selectable, Sizable,
     button::Button,
     input::{Input, InputEvent, InputState},
     slider::{Slider, SliderEvent, SliderState},
@@ -46,6 +46,7 @@ pub struct Settings {
     focus: FocusHandle,
     fields: Vec<Entity<InputState>>,
     slider: Entity<SliderState>,
+    editor_scroll: ScrollHandle,
     subscriptions: Vec<Subscription>,
 }
 impl Settings {
@@ -63,6 +64,7 @@ impl Settings {
             focus: cx.focus_handle(),
             fields,
             slider,
+            editor_scroll: ScrollHandle::new(),
             subscriptions: vec![],
         };
         for i in 0..3 {
@@ -92,9 +94,15 @@ impl Settings {
     }
     fn sync_fields(&mut self, w: &mut Window, cx: &mut Context<Self>) {
         let a = self.action();
-        if let Action::Adjust { step, .. } = &a {
-            self.slider
-                .update(cx, |s, cx| s.set_value(*step as f32, w, cx));
+        if let Action::Adjust { step, target, .. } = &a {
+            let (min, max, tick) = step_range(target, &self.selected);
+            self.slider.update(cx, |s, cx| {
+                *s = SliderState::new()
+                    .min(min.min(*step as f32))
+                    .max(max.max(*step as f32))
+                    .step(tick);
+                s.set_value(*step as f32, w, cx);
+            });
         }
         let vals = match a {
             Action::Keys { keys } => vec![keys],
@@ -188,7 +196,7 @@ fn caption(a: &Action) -> String {
         Action::Keys { keys } => keys.clone(),
         Action::Launch { .. } => "Launch app".into(),
         Action::Url { .. } => "Open URL".into(),
-        Action::Adjust { target, .. } => format!("Adjust {target:?}"),
+        Action::Adjust { target, .. } => adjust_info(target).label.into(),
     }
 }
 impl Render for Settings {
@@ -207,23 +215,53 @@ impl Render for Settings {
         if cx.global::<gpui_component::Theme>().mode != mode {
             gpui_component::Theme::change(mode, Some(w), cx);
         }
+        let primary: Hsla = rgb(accent).into();
+        let control: Hsla = rgb(if light { 0xffffff } else { 0x383838 }).into();
+        if cx.global::<gpui_component::Theme>().colors.primary != primary
+            || cx.global::<gpui_component::Theme>().colors.background != control
+        {
+            let colors = &mut cx.global_mut::<gpui_component::Theme>().colors;
+            colors.background = control;
+            colors.foreground = rgb(fg).into();
+            colors.border = rgb(line).into();
+            colors.input = rgb(line).into();
+            colors.secondary = control;
+            colors.secondary_foreground = rgb(fg).into();
+            colors.secondary_hover = rgb(if light { 0xf0f0f0 } else { 0x454545 }).into();
+            colors.secondary_active = rgb(if light { 0xe5e5e5 } else { 0x4b4b4b }).into();
+            colors.slider_bar = primary;
+            colors.slider_thumb = rgb(0xffffff).into();
+            colors.switch_thumb = rgb(0xffffff).into();
+            colors.primary = primary;
+            colors.primary_hover = primary;
+            colors.primary_active = primary;
+            colors.primary_foreground =
+                rgb(if primary.l > 0.6 { 0x101010 } else { 0xffffff }).into();
+        }
         let config = self.model.borrow().config.clone();
         let mut nav = div()
             .id("gestures")
-            .w(px(325.))
+            .w(px(288.))
+            .flex_shrink_0()
             .h_full()
             .overflow_y_scroll()
             .flex()
             .flex_col()
-            .gap_2()
-            .p_4()
+            .gap_1()
+            .p_3()
             .border_r_1()
             .border_color(rgb(line));
         nav = nav.child(
             Button::new("general")
+                .outline()
+                .selected(self.general)
+                .when(self.general, |b| {
+                    b.border_color(rgb(accent)).bg(rgba((accent << 8) | 0x1f))
+                })
                 .label("General settings")
                 .on_click(cx.listener(|s, _, _, cx| {
                     s.general = true;
+                    s.editor_scroll.set_offset(point(px(0.), px(0.)));
                     cx.notify();
                 })),
         );
@@ -243,6 +281,7 @@ impl Render for Settings {
                 });
                 let mut diagram = div()
                     .w(px(40.))
+                    .flex_shrink_0()
                     .h(px(30.))
                     .rounded_md()
                     .border_1()
@@ -258,10 +297,10 @@ impl Render for Settings {
                 if id.starts_with("edge_") {
                     diagram = diagram.child(
                         match id {
-                            "edge_left" => div().absolute().left_0().h_full().w(px(3.)),
-                            "edge_right" => div().absolute().right_0().h_full().w(px(3.)),
-                            "edge_top" => div().absolute().top_0().w_full().h(px(3.)),
-                            _ => div().absolute().bottom_0().w_full().h(px(3.)),
+                            "edge_left" => div().absolute().left_0().top_0().h(px(28.)).w(px(3.)),
+                            "edge_right" => div().absolute().right_0().top_0().h(px(28.)).w(px(3.)),
+                            "edge_top" => div().absolute().top_0().left_0().w(px(38.)).h(px(3.)),
+                            _ => div().absolute().bottom_0().left_0().w(px(38.)).h(px(3.)),
                         }
                         .bg(rgb(accent)),
                     );
@@ -282,23 +321,56 @@ impl Render for Settings {
                 }
                 nav =
                     nav.child(
-                        Button::new(id)
+                        div()
+                            .id(id)
                             .h(px(60.))
+                            .flex_shrink_0()
                             .relative()
                             .rounded_lg()
                             .p_2()
                             .flex()
                             .items_center()
                             .gap_3()
-                            .bg(rgb(if flash {
-                                accent
-                            } else if selected {
-                                if light { 0xe3eef8 } else { 0x30475c }
+                            .bg(rgb(if selected {
+                                if light { 0xe7e7e7 } else { 0x333333 }
                             } else {
                                 bg
                             }))
+                            .hover(|s| s.bg(rgb(if light { 0xeaeaea } else { 0x303030 })))
+                            .child(
+                                div()
+                                    .absolute()
+                                    .left_0()
+                                    .top(px(16.))
+                                    .w(px(3.))
+                                    .h(px(28.))
+                                    .rounded_full()
+                                    .bg(rgb(accent))
+                                    .opacity(if selected { 1. } else { 0. }),
+                            )
+                            .child(
+                                div()
+                                    .absolute()
+                                    .inset_0()
+                                    .rounded_lg()
+                                    .bg(rgb(accent))
+                                    .opacity(if flash {
+                                        self.model
+                                            .borrow()
+                                            .flash
+                                            .as_ref()
+                                            .map(|(_, time)| {
+                                                0.22 * (1. - time.elapsed().as_secs_f32() / 0.65)
+                                                    .max(0.)
+                                            })
+                                            .unwrap_or(0.)
+                                    } else {
+                                        0.
+                                    }),
+                            )
                             .cursor_pointer()
                             .on_click(cx.listener(move |s, _, w, cx| {
+                                s.editor_scroll.set_offset(point(px(0.), px(0.)));
                                 s.selected = id.into();
                                 s.general = false;
                                 s.recording = false;
@@ -316,42 +388,50 @@ impl Render for Settings {
         }
         let mut panel = div()
             .id("editor")
+            .track_scroll(&self.editor_scroll)
             .flex_1()
             .h_full()
             .overflow_y_scroll()
-            .p_8()
+            .p_6()
             .flex()
             .flex_col()
-            .gap_4();
+            .gap_3()
+            .min_w_0();
         if self.general {
             panel = panel.child(div().text_2xl().child("General")).child(
                 div()
                     .text_color(rgb(muted))
                     .child("Make your touchpad feel like yours."),
             );
-            for (id, label, on) in [
-                ("enabled", "Enable gestures", config.enabled),
+            for (id, label, description, on) in [
+                (
+                    "enabled",
+                    "Enable gestures",
+                    "Pause or resume all Touch gestures.",
+                    config.enabled,
+                ),
                 (
                     "drag",
-                    "Three-finger drag (disables 3-finger swipes and tap)",
+                    "Three-finger drag",
+                    "Replaces three-finger swipes and tap with dragging.",
                     config.drag3,
                 ),
                 (
                     "freeze",
-                    "Freeze pointer during edge slides",
+                    "Keep pointer still",
+                    "Freeze the pointer during edge slides.",
                     config.freeze_cursor,
                 ),
             ] {
                 panel = panel.child(
-                    div().p_4().bg(rgb(card)).rounded_lg().child(
-                        Switch::new(id)
-                            .label(label)
-                            .checked(on)
-                            .on_click(cx.listener(move |s, _, _, cx| {
+                    setting_card(card, line)
+                        .child(setting_text(label, description, muted))
+                        .child(Switch::new(id).checked(on).on_click(cx.listener(
+                            move |s, _, _, cx| {
                                 s.toggle(id);
                                 cx.notify();
-                            })),
-                    ),
+                            },
+                        ))),
                 );
             }
             for (id, label, value) in [
@@ -359,61 +439,103 @@ impl Render for Settings {
                 ("swipe", "Swipe distance", config.swipe_distance_mm),
             ] {
                 panel = panel.child(
-                    div()
-                        .flex()
-                        .gap_2()
-                        .items_center()
-                        .child(format!("{label}: {value:.1} mm"))
-                        .children([-1., 1.].into_iter().enumerate().map(|(i, delta)| {
-                            Button::new((id, i))
-                                .label(if delta < 0. { "-" } else { "+" })
-                                .on_click(cx.listener(move |s, _, _, cx| {
-                                    let mut m = s.model.borrow_mut();
-                                    let v = if id == "edge" {
-                                        &mut m.config.edge_width_mm
-                                    } else {
-                                        &mut m.config.swipe_distance_mm
-                                    };
-                                    *v = (*v + delta).clamp(1., 50.);
-                                    m.save();
-                                    cx.notify();
-                                }))
-                        })),
+                    setting_card(card, line)
+                        .child(setting_text(
+                            label,
+                            if id == "edge" {
+                                "Width of the active zone along each edge."
+                            } else {
+                                "Distance before a swipe is recognised."
+                            },
+                            muted,
+                        ))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap_2()
+                                .child(format!("{value:.1} mm"))
+                                .children([-1., 1.].into_iter().enumerate().map(|(i, delta)| {
+                                    Button::new((id, i))
+                                        .outline()
+                                        .label(if delta < 0. { "-" } else { "+" })
+                                        .on_click(cx.listener(move |s, _, _, cx| {
+                                            let mut m = s.model.borrow_mut();
+                                            let v = if id == "edge" {
+                                                &mut m.config.edge_width_mm
+                                            } else {
+                                                &mut m.config.swipe_distance_mm
+                                            };
+                                            *v = (*v + delta).clamp(1., 50.);
+                                            m.save();
+                                            cx.notify();
+                                        }))
+                                })),
+                        ),
                 );
             }
-            panel =
-                panel
-                    .child(
-                        Switch::new("autostart")
-                            .label("Start with Windows")
-                            .checked(crate::platform::autostart())
-                            .on_click(cx.listener(|s, on, _, cx| {
-                                if let Err(e) = crate::platform::set_autostart(*on) {
-                                    s.model.borrow_mut().warning = e.to_string();
-                                }
-                                cx.notify();
-                            })),
-                    )
-                    .child(
-                        Button::new("reset")
-                            .label("Reset to defaults")
-                            .on_click(cx.listener(|s, _, w, cx| {
-                                s.model.borrow_mut().config = Config::default();
-                                s.model.borrow_mut().save();
-                                s.sync_fields(w, cx);
-                            })),
-                    )
-                    .child(Button::new("folder").label("Open config folder").on_click(
-                        |_, _, cx| cx.open_url(&config_path().parent().unwrap().to_string_lossy()),
-                    ))
-                    .child(concat!("Touch ", env!("CARGO_PKG_VERSION")));
+            panel = panel
+                .child(
+                    setting_card(card, line)
+                        .child(setting_text(
+                            "Start with Windows",
+                            "Keep Touch available in the notification area.",
+                            muted,
+                        ))
+                        .child(
+                            Switch::new("autostart")
+                                .checked(crate::platform::autostart())
+                                .on_click(cx.listener(|s, on, _, cx| {
+                                    if let Err(e) = crate::platform::set_autostart(*on) {
+                                        s.model.borrow_mut().warning = e.to_string();
+                                    }
+                                    cx.notify();
+                                })),
+                        ),
+                )
+                .child(
+                    setting_card(card, line)
+                        .child(setting_text(
+                            "Restore defaults",
+                            "Reset all gestures and preferences.",
+                            muted,
+                        ))
+                        .child(
+                            Button::new("reset")
+                                .outline()
+                                .label("Reset to defaults")
+                                .on_click(cx.listener(|s, _, w, cx| {
+                                    s.model.borrow_mut().config = Config::default();
+                                    s.model.borrow_mut().save();
+                                    s.sync_fields(w, cx);
+                                    cx.notify();
+                                })),
+                        ),
+                )
+                .child(
+                    setting_card(card, line)
+                        .child(setting_text(
+                            "Configuration",
+                            "Your bindings are saved locally as JSON.",
+                            muted,
+                        ))
+                        .child(
+                            Button::new("folder")
+                                .outline()
+                                .label("Open folder")
+                                .on_click(|_, _, cx| {
+                                    cx.open_url(&config_path().parent().unwrap().to_string_lossy())
+                                }),
+                        ),
+                )
+                .child(concat!("Touch ", env!("CARGO_PKG_VERSION")));
         } else {
             let t = triggers().iter().find(|t| t.id == self.selected).unwrap();
             panel = panel
                 .child(
                     div()
                         .text_sm()
-                        .text_color(rgb(accent))
+                        .text_color(rgb(muted))
                         .child(t.group.to_uppercase()),
                 )
                 .child(div().text_2xl().child(t.label))
@@ -430,32 +552,66 @@ impl Render for Settings {
                         .p_3()
                         .rounded_lg()
                         .bg(rgb(if light { 0xfff4ce } else { 0x493c20 }))
-                        .child(conflict.message.clone())
+                        .flex()
+                        .flex_col()
+                        .gap_3()
+                        .border_1()
+                        .border_color(rgb(if light { 0xe6d9a8 } else { 0x6a5932 }))
+                        .child(
+                            div()
+                                .font_weight(FontWeight::SEMIBOLD)
+                                .child("Windows gestures overlap"),
+                        )
+                        .child(div().text_sm().child(format!(
+                            "{}. Otherwise, both actions may run.",
+                            conflict.message
+                        )))
                         .child(
                             Button::new("windows-settings")
-                                .label("Open Windows touchpad settings")
+                                .outline()
+                                .label("Open touchpad settings")
                                 .on_click(|_, _, cx| cx.open_url("ms-settings:devices-touchpad")),
                         ),
                 );
             }
-            panel = panel.child(
-                div()
-                    .text_sm()
-                    .child(format!("Current action: {}", caption(&self.action()))),
-            );
-            if t.continuous {
+            if !t.continuous {
                 panel = panel.child(
+                    setting_card(card, line)
+                        .child(setting_text("Action", &caption(&self.action()), muted))
+                        .child(Button::new("test").outline().label("Test action").on_click(
+                            cx.listener(|s, _, _, _| {
+                                if let Some(e) = s.model.borrow().engine.borrow().as_ref() {
+                                    e.run_action(&s.action());
+                                }
+                            }),
+                        )),
+                );
+            }
+            if t.continuous {
+                let mut targets = div().flex().flex_wrap().gap_2().child(
                     Button::new("unbound")
+                        .w(px(148.))
+                        .h(px(38.))
+                        .outline()
+                        .selected(matches!(self.action(), Action::None))
+                        .when(matches!(self.action(), Action::None), |b| {
+                            b.border_color(rgb(accent)).bg(rgba((accent << 8) | 0x1f))
+                        })
                         .label("Not assigned")
                         .on_click(cx.listener(|s, _, w, cx| s.bind(Action::None, w, cx))),
                 );
-                let mut targets = div().flex().flex_wrap().gap_2();
                 for info in adjust_targets() {
                     let target = info.target;
+                    let selected = matches!(self.action(), Action::Adjust { target: ref current, .. } if adjust_info(current).target == target);
                     targets = targets.child(
                         Button::new(target)
                             .outline()
-                            .w(px(154.))
+                            .selected(selected)
+                            .when(selected, |b| {
+                                b.border_color(rgb(accent)).bg(rgba((accent << 8) | 0x1f))
+                            })
+                            .w(px(148.))
+                            .h(px(38.))
                             .label(info.label)
                             .on_click(cx.listener(move |s, _, w, cx| {
                                 let target = match target {
@@ -474,7 +630,11 @@ impl Render for Settings {
                                 s.bind(
                                     Action::Adjust {
                                         target,
-                                        step: if s.selected == "twist4" { 12. } else { 4. },
+                                        step: if s.selected == "twist4" {
+                                            12.
+                                        } else {
+                                            info.default_step
+                                        },
                                         reverse: false,
                                     },
                                     w,
@@ -483,41 +643,100 @@ impl Render for Settings {
                             })),
                     );
                 }
-                panel = panel.child(targets);
+                panel = panel.child(
+                    div()
+                        .flex_shrink_0()
+                        .p_4()
+                        .rounded_lg()
+                        .border_1()
+                        .border_color(rgb(line))
+                        .bg(rgb(card))
+                        .flex()
+                        .flex_col()
+                        .gap_3()
+                        .child("Adjust action")
+                        .child(targets),
+                );
                 if let Action::Adjust {
                     step,
                     reverse,
                     target,
                 } = self.action()
                 {
+                    let info = adjust_info(&target);
+                    let unit = if t.id == "twist4" {
+                        "degrees"
+                    } else {
+                        info.unit
+                    };
+                    let hint = if t.id == "twist4" {
+                        format!("About {:.0} steps per quarter turn", 90. / step)
+                    } else if matches!(target, AdjustTarget::Brightness) {
+                        format!("About {:.0} % per finger-width (10 mm)", 10. / step)
+                    } else {
+                        format!("About {:.1} steps per finger-width (10 mm)", 10. / step)
+                    };
+                    let (min, max, _) = step_range(&target, t.id);
+                    let min = min.min(step as f32);
+                    let max = max.max(step as f32);
                     panel = panel
-                        .child(format!(
-                            "Step: {step:.2} {}",
-                            if t.id == "twist4" { "degrees" } else { "mm" }
-                        ))
-                        .child(Slider::new(&self.slider))
                         .child(
-                            Switch::new("reverse")
-                                .label("Reverse direction")
-                                .checked(reverse)
-                                .on_click(cx.listener(|s, _, w, cx| {
-                                    if let Action::Adjust {
-                                        target,
-                                        step,
-                                        reverse,
-                                    } = s.action()
-                                    {
-                                        s.bind(
-                                            Action::Adjust {
-                                                target,
-                                                step,
-                                                reverse: !reverse,
-                                            },
-                                            w,
-                                            cx,
-                                        );
-                                    }
-                                })),
+                            setting_card(card, line)
+                                .child(setting_text("Step distance", &hint, muted))
+                                .child(
+                                    div()
+                                        .w(px(190.))
+                                        .flex_shrink_0()
+                                        .flex()
+                                        .flex_col()
+                                        .gap_3()
+                                        .child(div().text_right().child(format!(
+                                            "{step:.2} {unit} / {}",
+                                            if matches!(target, AdjustTarget::Brightness) {
+                                                "1 %"
+                                            } else {
+                                                "step"
+                                            }
+                                        )))
+                                        .child(Slider::new(&self.slider))
+                                        .child(
+                                            div()
+                                                .flex()
+                                                .justify_between()
+                                                .text_xs()
+                                                .text_color(rgb(muted))
+                                                .child(format!("{min} {unit}"))
+                                                .child(format!("{max} {unit}")),
+                                        ),
+                                ),
+                        )
+                        .child(
+                            setting_card(card, line)
+                                .child(setting_text(
+                                    "Reverse direction",
+                                    "Swap increase and decrease.",
+                                    muted,
+                                ))
+                                .child(Switch::new("reverse").checked(reverse).on_click(
+                                    cx.listener(|s, _, w, cx| {
+                                        if let Action::Adjust {
+                                            target,
+                                            step,
+                                            reverse,
+                                        } = s.action()
+                                        {
+                                            s.bind(
+                                                Action::Adjust {
+                                                    target,
+                                                    step,
+                                                    reverse: !reverse,
+                                                },
+                                                w,
+                                                cx,
+                                            );
+                                        }
+                                    }),
+                                )),
                         );
                     if matches!(target, AdjustTarget::Custom { .. }) {
                         panel = panel
@@ -535,11 +754,21 @@ impl Render for Settings {
                         .gap_2()
                         .child(
                             Button::new("none")
-                                .label("None")
+                                .outline()
+                                .selected(matches!(self.action(), Action::None))
+                                .when(matches!(self.action(), Action::None), |b| {
+                                    b.border_color(rgb(accent)).bg(rgba((accent << 8) | 0x1f))
+                                })
+                                .label("Not assigned")
                                 .on_click(cx.listener(|s, _, w, cx| s.bind(Action::None, w, cx))),
                         )
                         .child(
                             Button::new("keys")
+                                .outline()
+                                .selected(matches!(self.action(), Action::Keys { .. }))
+                                .when(matches!(self.action(), Action::Keys { .. }), |b| {
+                                    b.border_color(rgb(accent)).bg(rgba((accent << 8) | 0x1f))
+                                })
                                 .label("Custom keys")
                                 .on_click(cx.listener(|s, _, w, cx| {
                                     s.bind(
@@ -553,6 +782,11 @@ impl Render for Settings {
                         )
                         .child(
                             Button::new("launch")
+                                .outline()
+                                .selected(matches!(self.action(), Action::Launch { .. }))
+                                .when(matches!(self.action(), Action::Launch { .. }), |b| {
+                                    b.border_color(rgb(accent)).bg(rgba((accent << 8) | 0x1f))
+                                })
                                 .label("Launch app")
                                 .on_click(cx.listener(|s, _, w, cx| {
                                     s.bind(
@@ -565,17 +799,24 @@ impl Render for Settings {
                                     )
                                 })),
                         )
-                        .child(Button::new("url").label("Open URL").on_click(cx.listener(
-                            |s, _, w, cx| {
-                                s.bind(
-                                    Action::Url {
-                                        url: "https://example.com".into(),
-                                    },
-                                    w,
-                                    cx,
-                                )
-                            },
-                        ))),
+                        .child(
+                            Button::new("url")
+                                .outline()
+                                .selected(matches!(self.action(), Action::Url { .. }))
+                                .when(matches!(self.action(), Action::Url { .. }), |b| {
+                                    b.border_color(rgb(accent)).bg(rgba((accent << 8) | 0x1f))
+                                })
+                                .label("Open URL")
+                                .on_click(cx.listener(|s, _, w, cx| {
+                                    s.bind(
+                                        Action::Url {
+                                            url: "https://example.com".into(),
+                                        },
+                                        w,
+                                        cx,
+                                    )
+                                })),
+                        ),
                 );
                 match self.action() {
                     Action::Keys { .. } => {
@@ -583,6 +824,7 @@ impl Render for Settings {
                             .child(Input::new(&self.fields[0]))
                             .child(
                                 Button::new("record")
+                                    .outline()
                                     .label(if self.recording {
                                         "Press a key combination… (Esc cancels)"
                                     } else {
@@ -610,6 +852,7 @@ impl Render for Settings {
                             .child(Input::new(&self.fields[1]))
                             .child(
                                 Button::new("browse")
+                                    .outline()
                                     .label("Choose application or document…")
                                     .on_click(cx.listener(|_s, _, w, cx| {
                                         let paths = cx.prompt_for_paths(PathPromptOptions {
@@ -639,23 +882,37 @@ impl Render for Settings {
                     Action::Url { .. } => panel = panel.child(Input::new(&self.fields[0])),
                     _ => {}
                 }
-                panel = panel.child(Button::new("test").label("Test action").on_click(
-                    cx.listener(|s, _, _, _| {
-                        if let Some(e) = s.model.borrow().engine.borrow().as_ref() {
-                            e.run_action(&s.action());
-                        }
-                    }),
-                ));
-                for group in unique_groups(presets().iter().map(|p| p.group)) {
+                let mut groups = unique_groups(presets().iter().map(|p| p.group));
+                // Put common corner actions first; keep group order stable while editing.
+                groups.sort_by_key(|group| *group != "Media");
+                for group in groups {
                     panel = panel.child(div().mt_3().text_sm().text_color(rgb(muted)).child(group));
-                    let mut buttons = div().flex().flex_wrap().gap_2();
+                    let mut buttons = div()
+                        .flex_shrink_0()
+                        .p_3()
+                        .bg(rgb(card))
+                        .border_1()
+                        .border_color(rgb(line))
+                        .rounded_lg()
+                        .flex()
+                        .flex_wrap()
+                        .gap_2();
                     for p in presets().iter().filter(|p| p.group == group) {
                         let name = p.name;
-                        buttons = buttons.child(Button::new(name).small().label(p.label).on_click(
-                            cx.listener(move |s, _, w, cx| {
-                                s.bind(Action::Preset { name: name.into() }, w, cx)
-                            }),
-                        ));
+                        let selected = matches!(self.action(), Action::Preset { name: ref current } if current == name);
+                        buttons = buttons.child(
+                            Button::new(name)
+                                .outline()
+                                .selected(selected)
+                                .when(selected, |b| {
+                                    b.border_color(rgb(accent)).bg(rgba((accent << 8) | 0x1f))
+                                })
+                                .small()
+                                .label(p.label)
+                                .on_click(cx.listener(move |s, _, w, cx| {
+                                    s.bind(Action::Preset { name: name.into() }, w, cx)
+                                })),
+                        );
                     }
                     panel = panel.child(buttons);
                 }
@@ -731,10 +988,13 @@ impl Render for Settings {
                     .border_color(rgb(line))
                     .child(div().text_lg().child(crate::PRODUCT_NAME))
                     .child(
-                        div()
-                            .text_sm()
-                            .text_color(rgb(muted))
-                            .child(if config.enabled {
+                        Switch::new("global-enabled")
+                            .checked(config.enabled)
+                            .on_click(cx.listener(|s, _, _, cx| {
+                                s.toggle("enabled");
+                                cx.notify();
+                            }))
+                            .label(if config.enabled {
                                 "Gestures enabled"
                             } else {
                                 "Gestures paused"
@@ -760,4 +1020,64 @@ fn unique_groups(items: impl Iterator<Item = &'static str>) -> Vec<&'static str>
         }
     }
     groups
+}
+
+fn setting_card(card: u32, line: u32) -> Div {
+    div()
+        .w_full()
+        .flex_shrink_0()
+        .flex()
+        .items_center()
+        .justify_between()
+        .gap_4()
+        .p_4()
+        .rounded_lg()
+        .bg(rgb(card))
+        .border_1()
+        .border_color(rgb(line))
+}
+fn setting_text(title: &str, description: &str, muted: u32) -> Div {
+    div()
+        .flex_1()
+        .min_w_0()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .child(
+            div()
+                .font_weight(FontWeight::MEDIUM)
+                .child(title.to_owned()),
+        )
+        .child(
+            div()
+                .text_xs()
+                .text_color(rgb(muted))
+                .child(description.to_owned()),
+        )
+}
+fn adjust_info(target: &AdjustTarget) -> &'static AdjustInfo {
+    let id = match target {
+        AdjustTarget::Volume => "volume",
+        AdjustTarget::Brightness => "brightness",
+        AdjustTarget::Seek => "seek",
+        AdjustTarget::ScrollH => "scroll_h",
+        AdjustTarget::Zoom => "zoom",
+        AdjustTarget::Tabs => "tabs",
+        AdjustTarget::Desktops => "desktops",
+        AdjustTarget::Custom { .. } => "custom",
+    };
+    adjust_targets()
+        .iter()
+        .find(|info| info.target == id)
+        .unwrap()
+}
+fn step_range(target: &AdjustTarget, trigger: &str) -> (f32, f32, f32) {
+    if trigger == "twist4" {
+        (5., 30., 0.5)
+    } else if matches!(target, AdjustTarget::Brightness) {
+        (0.3, 3., 0.01)
+    } else {
+        let default = adjust_info(target).default_step as f32;
+        (1., (default * 2.5).max(10.), 0.1)
+    }
 }

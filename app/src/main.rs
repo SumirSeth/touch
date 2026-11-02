@@ -54,6 +54,8 @@ fn main() {
         }
         cx.spawn(async move |cx| {
             let _tray = tray;
+            let mut appearance = platform::appearance();
+            let mut conflicts = Vec::new();
             loop {
                 cx.background_executor()
                     .timer(Duration::from_millis(80))
@@ -66,6 +68,7 @@ fn main() {
                         cx.quit();
                         return;
                     }
+                    let mut changed = false;
                     let mut show = platform::take_open_request();
                     while let Ok(event) = TrayIconEvent::receiver().try_recv() {
                         if matches!(
@@ -90,33 +93,72 @@ fn main() {
                             cx.quit();
                         }
                         if event.id == pause.id() {
+                            changed = true;
                             let enabled = !pause.is_checked();
                             model.borrow_mut().config.enabled = enabled;
                             model.borrow_mut().save();
                         }
-                        if event.id == startup.id()
-                            && let Err(e) = platform::set_autostart(startup.is_checked())
-                        {
-                            model.borrow_mut().warning = e.to_string();
+                        if event.id == startup.id() {
+                            changed = true;
+                            if let Err(e) = platform::set_autostart(startup.is_checked()) {
+                                model.borrow_mut().warning = e.to_string();
+                            }
                         }
                     }
                     while let Ok(event) = rx.try_recv() {
                         match event {
                             EngineEvent::Fired { trigger }
                             | EngineEvent::Adjusted { trigger, .. } => {
+                                changed = true;
                                 model.borrow_mut().flash = Some((trigger, Instant::now()))
                             }
-                            EngineEvent::Error(e) => model.borrow_mut().warning = e,
+                            EngineEvent::Error(e) => {
+                                changed = true;
+                                model.borrow_mut().warning = e;
+                            }
                             EngineEvent::NoTouchpad => {}
                             _ => {}
                         }
                     }
-                    pause.set_checked(!model.borrow().config.enabled);
-                    startup.set_checked(platform::autostart());
+                    let paused = !model.borrow().config.enabled;
+                    if pause.is_checked() != paused {
+                        pause.set_checked(paused);
+                    }
+                    let autostart = platform::autostart();
+                    if startup.is_checked() != autostart {
+                        startup.set_checked(autostart);
+                        changed = true;
+                    }
+                    // Polling still services the tray while idle, but does not invalidate GPUI.
+                    let current_appearance = platform::appearance();
+                    if appearance != current_appearance {
+                        appearance = current_appearance;
+                        changed = true;
+                    }
+                    if !cx.windows().is_empty() {
+                        let current_conflicts: Vec<_> =
+                            gestures_engine::windows_conflicts(&model.borrow().config)
+                                .into_iter()
+                                .map(|c| (c.trigger_prefix, c.message))
+                                .collect();
+                        if conflicts != current_conflicts {
+                            conflicts = current_conflicts;
+                            changed = true;
+                        }
+                    }
+                    {
+                        let mut m = model.borrow_mut();
+                        if let Some((_, time)) = &m.flash {
+                            changed = true;
+                            if time.elapsed() >= Duration::from_millis(650) {
+                                m.flash = None;
+                            }
+                        }
+                    }
                     if show {
                         open(model.clone(), cx);
                     }
-                    if !cx.windows().is_empty() {
+                    if changed && !cx.windows().is_empty() {
                         cx.refresh_windows();
                     }
                 });
