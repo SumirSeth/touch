@@ -5,7 +5,7 @@ does. It works alongside Windows' own touchpad handling (pointer, scrolling and 
 overlay work: `trackpad/overlay`, `VirtualTouchpad.cs`, `OverlayLink.cs` and the 3-finger replay are not part of the
 release.
 
-The C# prototype in `trackpad/gestures/` is the reference implementation: raw-input decoding (`Touchpad.cs`),
+The C# prototype (removed from the tree; see commit 0e3af09 in history, under `trackpad/gestures/`) was the reference implementation: raw-input decoding (`Touchpad.cs`),
 recognisers (`Gestures.cs`), brightness through WMI (`Brightness.cs`), key injection (`Native.cs`), tests
 (`test.ps1`). Background on why things are the way they are: `trackpad/research/`. Rule from the user: no third-party
 mods or hooks (no Windhawk etc.). Ordinary crates are fine.

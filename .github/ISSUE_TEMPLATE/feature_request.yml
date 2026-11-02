@@ -1,0 +1,16 @@
+name: Feature request
+description: Suggest a gesture, action or improvement
+labels: [enhancement]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like?
+      description: Describe the gesture or action, and what it should do.
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why?
+      description: How would you use it? For a new gesture, how would it be told apart from normal pointing and scrolling?

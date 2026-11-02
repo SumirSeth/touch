@@ -1,0 +1,37 @@
+name: Bug report
+description: Something doesn't work as expected
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Touch version
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      description: Run `winver`.
+      placeholder: "Windows 11 24H2 (build 26100)"
+    validations:
+      required: true
+  - type: input
+    id: hardware
+    attributes:
+      label: Laptop / touchpad model
+      placeholder: "ASUS Vivobook 16"
+  - type: textarea
+    id: config
+    attributes:
+      label: config.json (optional)
+      description: Contents of `%APPDATA%\Touch\config.json`, if the problem involves a specific binding.
+      render: json

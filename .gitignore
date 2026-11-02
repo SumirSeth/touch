@@ -3,3 +3,6 @@
 trackpad/research/scratch-*/
 
 *.log
+
+# Local prototype leftovers (removed from the repo; see history before ef4e728)
+trackpad/
