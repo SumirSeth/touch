@@ -2,6 +2,13 @@
 
 All notable changes are listed here. Versions follow [Semantic Versioning](https://semver.org).
 
+## [Unreleased]
+
+### Fixed
+
+- Multi-finger gestures on touchpads that report several fingers per HID report (hybrid/parallel mode). Only the
+  first finger of each report was read, so 3-, 4- and 5-finger gestures never fired on those pads.
+
 ## [0.1.0] - 2026-11-02
 
 First release.

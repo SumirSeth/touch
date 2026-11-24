@@ -475,6 +475,9 @@ struct Device {
     sy: f64,
     min_x: f64,
     min_y: f64,
+    /// Link collections that hold one finger each. Precision Touchpads in hybrid or parallel
+    /// mode pack several fingers into one report, each in its own logical collection.
+    fingers: Vec<u16>,
     pending: Vec<Contact>,
     expected: usize,
     button: bool,
@@ -496,6 +499,7 @@ impl Device {
             sy: 1.,
             min_x: 0.,
             min_y: 0.,
+            fingers: vec![],
             pending: vec![],
             expected: 0,
             button: false,
@@ -518,22 +522,37 @@ impl Device {
         {
             return Err(io::Error::last_os_error());
         }
-        (d.width, d.sx, d.min_x) = d.axis(0x30)?;
-        (d.height, d.sy, d.min_y) = d.axis(0x31)?;
+        let x_caps = d.value_caps(0x30)?;
+        for cap in &x_caps {
+            if !d.fingers.contains(&cap.LinkCollection) {
+                d.fingers.push(cap.LinkCollection);
+            }
+        }
+        (d.width, d.sx, d.min_x) = Self::axis(&x_caps[0])?;
+        (d.height, d.sy, d.min_y) = Self::axis(&d.value_caps(0x31)?[0])?;
         Ok(d)
     }
     fn pp(&self) -> PHIDP_PREPARSED_DATA {
         self.pp.as_ptr() as isize
     }
-    unsafe fn axis(&self, usage: u16) -> io::Result<(f64, f64, f64)> {
-        let mut cap = HIDP_VALUE_CAPS::default();
-        let mut n = 1;
-        if HidP_GetSpecificValueCaps(HidP_Input, 1, 1, usage, &mut cap, &mut n, self.pp())
+    /// Every input value cap for a Generic Desktop usage, across all link collections.
+    unsafe fn value_caps(&self, usage: u16) -> io::Result<Vec<HIDP_VALUE_CAPS>> {
+        let mut caps = HIDP_CAPS::default();
+        if HidP_GetCaps(self.pp(), &mut caps) != HIDP_STATUS_SUCCESS {
+            return Err(io::Error::other("Invalid HID descriptor"));
+        }
+        let mut n = caps.NumberInputValueCaps.max(1);
+        let mut out = vec![HIDP_VALUE_CAPS::default(); n as usize];
+        if HidP_GetSpecificValueCaps(HidP_Input, 1, 0, usage, out.as_mut_ptr(), &mut n, self.pp())
             != HIDP_STATUS_SUCCESS
             || n == 0
         {
             return Err(io::Error::other("Missing HID axis caps"));
         }
+        out.truncate(n as usize);
+        Ok(out)
+    }
+    fn axis(cap: &HIDP_VALUE_CAPS) -> io::Result<(f64, f64, f64)> {
         let logical = (cap.LogicalMax - cap.LogicalMin) as f64;
         let physical = (cap.PhysicalMax - cap.PhysicalMin) as f64;
         if logical <= 0. {
@@ -595,16 +614,24 @@ impl Device {
             return None;
         }
         self.button |= self.usages(9, 0, r).1 != 0;
-        let (usages, n) = self.usages(13, 1, r);
-        let tip = usages[..n].contains(&0x42);
-        let p = Contact {
-            id: self.value(13, 1, 0x51, r),
-            x: (self.value(1, 1, 0x30, r) as f64 - self.min_x) * self.sx,
-            y: (self.value(1, 1, 0x31, r) as f64 - self.min_y) * self.sy,
-        };
-        self.pending.push(p); // keep report count separately from touching count
-        if !tip {
-            self.pending.last_mut().unwrap().id = u32::MAX;
+        // A report carries up to `fingers.len()` contacts; slots past the frame's count are padding.
+        for i in 0..self.fingers.len() {
+            if self.pending.len() >= self.expected {
+                break;
+            }
+            let link = self.fingers[i];
+            let (usages, n) = self.usages(13, link, r);
+            let tip = usages[..n].contains(&0x42);
+            // Lifted contacts still count toward the frame's total but are dropped below.
+            self.pending.push(Contact {
+                id: if tip {
+                    self.value(13, link, 0x51, r)
+                } else {
+                    u32::MAX
+                },
+                x: (self.value(1, link, 0x30, r) as f64 - self.min_x) * self.sx,
+                y: (self.value(1, link, 0x31, r) as f64 - self.min_y) * self.sy,
+            });
         }
         if self.pending.len() < self.expected {
             return None;
